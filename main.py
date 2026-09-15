@@ -3,16 +3,14 @@ import json
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from typing import Any
 
 import duckdb
-import gradio as gr
-import httpx
 from fastapi import FastAPI, HTTPException, Query, Response
 from pydantic import BaseModel
 
 # ── Config ──────────────────────────────────────────────────────────────────
-BASE = os.path.dirname(os.path.abspath(__file__))
 HF_INDEX_BASE = os.environ.get(
     "PSYCHOPATHMC_HF_INDEX_BASE",
     "https://huggingface.co/datasets/Nasskeke/icrm-hitek-full-db-mixed/resolve/main",
@@ -82,7 +80,7 @@ def _get_conn() -> duckdb.DuckDBPyConnection:
     return _conns[ident]
 
 
-# ── Dedup & Connected Records ───────────────────────────────────────────────
+# ── Dedup ───────────────────────────────────────────────────────────────────
 def _person_key(row: dict) -> tuple:
     ph = (row.get("phoneNumber") or "").strip()
     ad = (row.get("aadharNumber") or "").strip()
@@ -203,8 +201,18 @@ def _unified_search(q: str, limit: int = 10) -> dict:
     return {"query": q, "searched_fields": [], "count": 0, "results": []}
 
 
+# ── Lifespan (Vercel-compatible) ────────────────────────────────────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        _get_conn()
+    except Exception:
+        pass
+    yield
+
+
 # ── FastAPI ─────────────────────────────────────────────────────────────────
-fastapi_app = FastAPI(title="psychopathmc Search API")
+app = FastAPI(title="psychopathmc Search API", lifespan=lifespan)
 
 
 class BatchRequest(BaseModel):
@@ -212,7 +220,7 @@ class BatchRequest(BaseModel):
     limit: int = 10
 
 
-@fastapi_app.get("/api")
+@app.get("/")
 def root():
     return {
         "app": "psychopathmc Search API",
@@ -223,13 +231,13 @@ def root():
         "docs": "/docs",
         "developer": "@psychopathmc",
         "support": {
-            "buy_api": f"{SUPPORT_CONTACT}",
+            "buy_api": SUPPORT_CONTACT,
             "channel": "@psychodagoated",
         },
     }
 
 
-@fastapi_app.get("/health")
+@app.get("/health")
 def health():
     return {
         "status": "ok",
@@ -239,7 +247,7 @@ def health():
     }
 
 
-@fastapi_app.get("/search")
+@app.get("/search")
 async def search(
     q: str | None = Query(None),
     mobile: str | None = Query(None),
@@ -268,7 +276,7 @@ async def search(
     return Response(content=content, media_type="application/json")
 
 
-@fastapi_app.post("/search/parallel")
+@app.post("/search/parallel")
 async def search_parallel(req: BatchRequest):
     if not req.queries:
         raise HTTPException(400, "queries must not be empty")
@@ -295,157 +303,4 @@ async def search_parallel(req: BatchRequest):
             ensure_ascii=False,
         ),
         media_type="application/json",
-    )
-
-
-# ── Pinger ──────────────────────────────────────────────────────────────────
-async def pinger():
-    port = os.getenv("PORT", "7860")
-    url = f"http://localhost:{port}/health"
-    async with httpx.AsyncClient(timeout=10) as client:
-        while True:
-            await asyncio.sleep(120)
-            try:
-                resp = await client.get(url)
-                if resp.status_code == 200:
-                    print("[Pinger] OK")
-                else:
-                    print(f"[Pinger] Unexpected status: {resp.status_code}")
-            except Exception as e:
-                print(f"[Pinger] Error: {e}")
-
-
-@fastapi_app.on_event("startup")
-async def startup_event():
-    asyncio.create_task(pinger())
-
-
-# ── Gradio UI ───────────────────────────────────────────────────────────────
-def format_result(row: dict) -> str:
-    lines = []
-    for field in SEARCH_FIELDS:
-        val = row.get(field, "")
-        if val:
-            lines.append(f"**{field}:** {val}")
-    cn = row.get("connected_numbers", [])
-    if cn:
-        nums = ", ".join(f"{c['field']}={c['value']}" for c in cn)
-        lines.append(f"**connected:** {nums}")
-    return "\n\n".join(lines)
-
-
-def search_ui(query: str, limit: int) -> str:
-    if not query or not query.strip():
-        return "⚠️ Kuch toh search karo — phone, aadhar, ya name daalo."
-    q = query.strip()
-    try:
-        data = _unified_search(q, int(limit))
-    except Exception as e:
-        return f"❌ Error: {str(e)}"
-    count = data["count"]
-    results = data["results"]
-    searched = ", ".join(data.get("searched_fields", [])) or "—"
-    if not results:
-        return f"🔍 **Query:** `{q}`\n**Searched:** {searched}\n\n❌ **No data found**."
-    header = f"🔍 **Query:** `{q}`  |  **Found:** {count}  |  **Searched:** {searched}\n\n---\n\n"
-    parts = [f"### Result {i}\n{format_result(row)}" for i, row in enumerate(results, 1)]
-    return header + "\n\n---\n\n".join(parts)
-
-
-def build_ui():
-    with gr.Blocks(
-        title="psychopathmc Search API",
-        theme=gr.themes.Soft(),
-        css="""
-        .main-title { text-align: center; margin-bottom: 0; }
-        .subtitle { text-align: center; color: #666; margin-top: 0; }
-        .footer { text-align: center; color: #888; margin-top: 20px; }
-        .support-box {
-            text-align: center;
-            padding: 16px;
-            border: 1px solid #ddd;
-            border-radius: 8px;
-            background: #fafafa;
-            margin-top: 12px;
-        }
-        .support-title { font-size: 1.05em; font-weight: 600; margin-bottom: 6px; }
-        .support-contact { color: #444; }
-        """
-    ) as demo:
-        gr.Markdown("# 🔍 psychopathmc Search API", elem_classes="main-title")
-        gr.Markdown(
-            "Search **2.5 billion records** — phone, Aadhaar, name, address & more",
-            elem_classes="subtitle",
-        )
-
-        with gr.Row():
-            with gr.Column(scale=3):
-                query_input = gr.Textbox(
-                    label="Search Query",
-                    placeholder="Phone number, Aadhaar, ya name daalo...",
-                    lines=1,
                 )
-            with gr.Column(scale=1):
-                limit_slider = gr.Slider(
-                    minimum=1, maximum=50, value=10, step=1, label="Max Results"
-                )
-
-        search_btn = gr.Button("🔍 Search", variant="primary", size="lg")
-        output = gr.Markdown(label="Results")
-
-        search_btn.click(fn=search_ui, inputs=[query_input, limit_slider], outputs=output)
-        query_input.submit(fn=search_ui, inputs=[query_input, limit_slider], outputs=output)
-
-        gr.Markdown("---")
-
-        with gr.Accordion("📡 API Info", open=False):
-            gr.Markdown("""
-**Endpoints** (via FastAPI):
-- `GET /search?q=<value>` — Phone / Aadhaar / name search
-- `GET /search?mobile=<number>` — Phone search alias
-- `GET /search?field=name&mode=contains&q=<name>`
-- `POST /search/parallel` — batch
-- `GET /health` — health check
-- `GET /docs` — Swagger UI
-            """)
-
-        with gr.Accordion("💎 Buy API Access", open=False):
-            gr.Markdown(f"""
-### 🔑 Want the full API?
-
-This is the **demo interface**. For high-volume access, bulk queries,
-and commercial API keys — reach out directly.
-
-**Contact:** `{SUPPORT_CONTACT}` on Discord
-
-**Channel:** [@psychodagoated](https://t.me/psychodagoated)
-
-**What you get:**
-- Unlimited search queries
-- Bulk / parallel endpoints
-- 5 billion+ records
-- Priority support
-            """)
-
-        gr.Markdown(
-            "<div class='support-box'>"
-            "<div class='support-title'>💎 Buy API Access</div>"
-            f"<div class='support-contact'>Contact <b>{SUPPORT_CONTACT}</b> on Discord for API keys</div>"
-            "</div>"
-        )
-
-        gr.Markdown(
-            "---\n"
-            "<div class='footer'>"
-            "👨‍💻 **Developer:** @psychopathmc  |  📢 **Channel:** @psychodagoated"
-            "</div>",
-            elem_classes="footer",
-        )
-
-    return demo
-
-
-demo = build_ui()
-
-fastapi_app = gr.mount_gradio_app(fastapi_app, demo, path="/ui")
-app = fastapi_app
