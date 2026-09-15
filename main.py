@@ -14,13 +14,15 @@ from pydantic import BaseModel
 # ── Config ──────────────────────────────────────────────────────────────────
 BASE = os.path.dirname(os.path.abspath(__file__))
 HF_INDEX_BASE = os.environ.get(
-    "ICMR_HF_INDEX_BASE",
+    "PSYCHOPATHMC_HF_INDEX_BASE",
     "https://huggingface.co/datasets/Nasskeke/icrm-hitek-full-db-mixed/resolve/main",
 ).rstrip("/")
-INDEX_SOURCE = os.environ.get("ICMR_INDEX_SOURCE", "remote").lower()
-PARALLELISM = int(os.environ.get("ICMR_PARALLEL", "2"))
-THREADS_PER_CONN = int(os.environ.get("ICMR_THREADS_PER_CONN", "2"))
+INDEX_SOURCE = os.environ.get("PSYCHOPATHMC_INDEX_SOURCE", "remote").lower()
+PARALLELISM = int(os.environ.get("PSYCHOPATHMC_PARALLEL", "2"))
+THREADS_PER_CONN = int(os.environ.get("PSYCHOPATHMC_THREADS_PER_CONN", "2"))
 DUPLICATE_CAP = 2
+
+SUPPORT_CONTACT = os.environ.get("PSYCHOPATHMC_SUPPORT", "psychopathmc on Discord")
 
 SEARCH_FIELDS = [
     "name", "fathersName", "phoneNumber", "aadharNumber", "otherNumber",
@@ -202,7 +204,7 @@ def _unified_search(q: str, limit: int = 10) -> dict:
 
 
 # ── FastAPI ─────────────────────────────────────────────────────────────────
-fastapi_app = FastAPI(title="ICMR + HITEK Search API")
+fastapi_app = FastAPI(title="psychopathmc Search API")
 
 
 class BatchRequest(BaseModel):
@@ -213,13 +215,17 @@ class BatchRequest(BaseModel):
 @fastapi_app.get("/api")
 def root():
     return {
-        "app": "ICMR + HITEK Search API",
-        "records": 5_010_000_000,
+        "app": "psychopathmc Search API",
+        "records": 2_504_793_870,
         "indexes": {"phone": _idx_ready("phone"), "aadhar": _idx_ready("aadhar")},
         "index_source": INDEX_SOURCE,
         "columns": SEARCH_FIELDS,
         "docs": "/docs",
         "developer": "@psychopathmc",
+        "support": {
+            "buy_api": f"{SUPPORT_CONTACT}",
+            "channel": "@psychodagoated",
+        },
     }
 
 
@@ -348,17 +354,27 @@ def search_ui(query: str, limit: int) -> str:
 
 def build_ui():
     with gr.Blocks(
-        title="ICMR Search API",
+        title="psychopathmc Search API",
         theme=gr.themes.Soft(),
         css="""
         .main-title { text-align: center; margin-bottom: 0; }
         .subtitle { text-align: center; color: #666; margin-top: 0; }
         .footer { text-align: center; color: #888; margin-top: 20px; }
+        .support-box {
+            text-align: center;
+            padding: 16px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            background: #fafafa;
+            margin-top: 12px;
+        }
+        .support-title { font-size: 1.05em; font-weight: 600; margin-bottom: 6px; }
+        .support-contact { color: #444; }
         """
     ) as demo:
-        gr.Markdown("# 🔍 ICMR + HITEK Search API", elem_classes="main-title")
+        gr.Markdown("# 🔍 psychopathmc Search API", elem_classes="main-title")
         gr.Markdown(
-            "Search **5 billion records** — phone, Aadhaar, name, address & more",
+            "Search **2.5 billion records** — phone, Aadhaar, name, address & more",
             elem_classes="subtitle",
         )
 
@@ -381,6 +397,7 @@ def build_ui():
         query_input.submit(fn=search_ui, inputs=[query_input, limit_slider], outputs=output)
 
         gr.Markdown("---")
+
         with gr.Accordion("📡 API Info", open=False):
             gr.Markdown("""
 **Endpoints** (via FastAPI):
@@ -390,9 +407,32 @@ def build_ui():
 - `POST /search/parallel` — batch
 - `GET /health` — health check
 - `GET /docs` — Swagger UI
-
-**Source:** [HF Dataset](https://huggingface.co/datasets/Nasskeke/icrm-hitek-full-db-mixed)
             """)
+
+        with gr.Accordion("💎 Buy API Access", open=False):
+            gr.Markdown(f"""
+### 🔑 Want the full API?
+
+This is the **demo interface**. For high-volume access, bulk queries,
+and commercial API keys — reach out directly.
+
+**Contact:** `{SUPPORT_CONTACT}` on Discord
+
+**Channel:** [@psychodagoated](https://t.me/psychodagoated)
+
+**What you get:**
+- Unlimited search queries
+- Bulk / parallel endpoints
+- 5 billion+ records
+- Priority support
+            """)
+
+        gr.Markdown(
+            "<div class='support-box'>"
+            "<div class='support-title'>💎 Buy API Access</div>"
+            f"<div class='support-contact'>Contact <b>{SUPPORT_CONTACT}</b> on Discord for API keys</div>"
+            "</div>"
+        )
 
         gr.Markdown(
             "---\n"
